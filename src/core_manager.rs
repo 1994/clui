@@ -65,6 +65,30 @@ impl EmbeddedCoreManager {
             shutdown_tx: None,
         }
     }
+
+    fn ensure_core_log_file() -> Option<String> {
+        let log_dir = dirs::config_dir()
+            .map(|d| d.join("clash-tui").join("logs"))
+            .unwrap_or_else(|| PathBuf::from("logs"));
+
+        if let Err(e) = std::fs::create_dir_all(&log_dir) {
+            log::warn!("创建 clash 核心日志目录失败 {:?}: {}", log_dir, e);
+            return None;
+        }
+
+        let log_path = log_dir.join("clash-core.log");
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            Ok(_) => Some(log_path.to_string_lossy().to_string()),
+            Err(e) => {
+                log::warn!("创建 clash 核心日志文件失败 {:?}: {}", log_path, e);
+                None
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -103,6 +127,19 @@ impl CoreManager for EmbeddedCoreManager {
             .await
             .with_context(|| format!("读取配置失败: {:?}", self.config_path))?;
 
+        // 在内嵌核心场景关闭核心 stdout 日志，避免污染 TUI。
+        // 日志仍通过 log_file 落盘，便于排查问题。
+        let mut config_value: serde_yaml::Value = serde_yaml::from_str(&config_str)
+            .with_context(|| format!("解析配置失败: {:?}", self.config_path))?;
+        if let Some(mapping) = config_value.as_mapping_mut() {
+            mapping.insert(
+                serde_yaml::Value::String("log-level".to_string()),
+                serde_yaml::Value::String("off".to_string()),
+            );
+        }
+        let config_str = serde_yaml::to_string(&config_value)
+            .with_context(|| format!("序列化配置失败: {:?}", self.config_path))?;
+
         // 使用 clash-lib 的 API 启动
         let opts = clash::Options {
             config: clash::Config::Str(config_str),
@@ -111,7 +148,7 @@ impl CoreManager for EmbeddedCoreManager {
                 .parent()
                 .map(|p| p.to_string_lossy().to_string()),
             rt: Some(clash::TokioRuntime::MultiThread),
-            log_file: None,
+            log_file: Self::ensure_core_log_file(),
         };
 
         // 创建关闭信号通道

@@ -1,7 +1,6 @@
 use crate::clash::ClashClient;
 use crate::config::ConfigManager;
 use anyhow::{Context, Result, anyhow};
-use reqwest::header::USER_AGENT;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -166,30 +165,19 @@ impl Scheduler {
 
         let _ = self.event_tx.send(SchedulerEvent::Started(name.clone()));
 
-        let result = match self.clash.update_provider(&name).await {
-            Ok(_) => Ok(()),
-            Err(api_err) => {
-                match self.download_provider_snapshot_and_reload(&name).await {
-                    Ok(_) => {
-                        self.event_tx
-                            .send(SchedulerEvent::Progress(
-                                name.clone(),
-                                "核心更新失败，已回退为直连下载并重载配置".to_string(),
-                            ))
-                            .ok();
-                        Ok(())
-                    }
-                    Err(fallback_err) => Err(anyhow!(
-                        "{}；回退下载也失败: {}",
-                        api_err,
-                        fallback_err
-                    )),
-                }
-            }
+        // 直接使用回退下载方式，绕过核心 API
+        let result = self.download_provider_snapshot_and_reload(&name).await;
+
+        let progress_msg = match &result {
+            Ok(_) => "订阅更新成功".to_string(),
+            Err(e) => format!("订阅更新失败: {:#}", e),
         };
+        self.event_tx
+            .send(SchedulerEvent::Progress(name.clone(), progress_msg))
+            .ok();
 
         let success = result.is_ok();
-        let error_msg = result.err().map(|e| e.to_string());
+        let error_msg = result.err().map(|e| format!("{:#}", e));
 
         // Mark as completed
         {
@@ -223,60 +211,49 @@ impl Scheduler {
             .get(name)
             .ok_or_else(|| anyhow!("配置中不存在订阅 '{}'", name))?;
 
+        log::info!("开始下载订阅 '{}', URL: {}", name, provider.url);
+
         let path = provider
             .path
             .as_deref()
             .ok_or_else(|| anyhow!("订阅 '{}' 缺少 path 配置", name))?;
         let target_path = self.resolve_provider_path(path);
 
-        let response = reqwest::Client::new()
-            .get(provider.url.as_str())
-            .header(USER_AGENT, "clash-rs/0.0.0")
-            .send()
+        log::info!("订阅 '{}' 目标路径: {:?}", name, target_path);
+
+        // 使用 ClashClient 的方法下载，带上正确的 User-Agent
+        let body = self.clash.fetch_subscription(&provider.url).await?;
+
+        log::info!("订阅 '{}' 下载完成, body 长度: {}", name, body.len());
+
+        self.write_snapshot_and_reload(name, &target_path, &body)
             .await
-            .with_context(|| format!("拉取订阅 '{}' 失败", name))?;
+    }
 
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .with_context(|| format!("读取订阅 '{}' 响应失败", name))?;
-
-        if !status.is_success() {
-            let detail = body.trim();
-            if detail.is_empty() {
-                return Err(anyhow!("拉取订阅 '{}' 失败: HTTP {}", name, status));
-            }
-            return Err(anyhow!(
-                "拉取订阅 '{}' 失败: HTTP {} - {}",
-                name,
-                status,
-                detail
-            ));
-        }
-
-        if !body.contains("proxies:") {
-            return Err(anyhow!(
-                "拉取订阅 '{}' 失败: 响应不含 proxies 字段",
-                name
-            ));
-        }
-
+    async fn write_snapshot_and_reload(
+        &self,
+        name: &str,
+        target_path: &Path,
+        body: &str,
+    ) -> Result<()> {
         if let Some(parent) = target_path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
                 .with_context(|| format!("创建订阅目录失败: {:?}", parent))?;
         }
 
-        tokio::fs::write(&target_path, body)
+        tokio::fs::write(target_path, body)
             .await
             .with_context(|| format!("写入订阅缓存失败: {:?}", target_path))?;
+
+        log::info!("订阅 '{}' 已写入, 开始重载配置", name);
 
         self.clash
             .reload_config(true)
             .await
             .with_context(|| format!("回退下载后重载配置失败: '{}'", name))?;
 
+        log::info!("订阅 '{}' 更新完成", name);
         Ok(())
     }
 
@@ -349,5 +326,72 @@ pub fn format_duration_detailed(duration: Duration) -> String {
         "即将".to_string()
     } else {
         parts.join("")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Scheduler;
+    use crate::{clash::ClashClient, config::ConfigManager};
+    use std::fs;
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn write_snapshot_should_write_body_even_without_proxies_marker() {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let base_dir = std::env::temp_dir().join(format!(
+            "clash-tui-scheduler-test-{}-{}",
+            std::process::id(),
+            timestamp
+        ));
+        let config_path = base_dir.join("config.yaml");
+        let cache_path = base_dir.join("providers").join("demo.yaml");
+
+        fs::create_dir_all(&base_dir).expect("should create base directory");
+        fs::write(
+            &config_path,
+            r#"
+proxy-providers:
+  demo:
+    type: http
+    url: https://example.com/sub
+    interval: 86400
+    path: ./providers/demo.yaml
+"#,
+        )
+        .expect("should write test config");
+
+        let config_manager =
+            ConfigManager::new(Some(config_path.clone())).expect("should create config manager");
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let scheduler = Scheduler::new(
+            ClashClient::new("http://127.0.0.1:1".to_string()),
+            config_manager,
+            event_tx,
+        );
+
+        let err = scheduler
+            .write_snapshot_and_reload(
+                "demo",
+                Path::new(&cache_path),
+                "raw-subscription-content-without-proxies",
+            )
+            .await
+            .expect_err("reload should fail when clash API is unreachable");
+
+        let written =
+            fs::read_to_string(&cache_path).expect("subscription cache should be written");
+        assert_eq!(written, "raw-subscription-content-without-proxies");
+        assert!(
+            err.to_string().contains("回退下载后重载配置失败"),
+            "error should come from reload stage after download/write"
+        );
+
+        let _ = fs::remove_dir_all(base_dir);
     }
 }

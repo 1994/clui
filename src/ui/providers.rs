@@ -44,7 +44,7 @@ fn render_provider_list(f: &mut Frame, app: &App, area: Rect) {
 
     let help_line = Line::from(vec![
         auto_update_status,
-        Span::raw(" | a:新增 e:编辑 D:删除 u:立即更新 U:更新全部 h:健康检查 Enter:展开 ↑↓:选择"),
+        Span::raw(" | a:新增 e:编辑 d/D:删除 u:立即更新 U:更新全部 h:健康检查 Enter:展开 ↑↓:选择"),
     ]);
     let help = Paragraph::new(help_line)
         .style(Style::default().fg(Color::Gray))
@@ -53,9 +53,23 @@ fn render_provider_list(f: &mut Frame, app: &App, area: Rect) {
 
     // Render success/error message if exists
     let (msg_area, table_area) = if app.success_message.is_some() || app.error_message.is_some() {
+        let msg_text = app
+            .success_message
+            .as_deref()
+            .or(app.error_message.as_deref())
+            .unwrap_or_default();
+        let msg_width = chunks[2].width.saturating_sub(4).max(1) as usize;
+        let msg_lines = msg_text
+            .lines()
+            .map(|line| line.chars().count())
+            .map(|count| count.div_ceil(msg_width))
+            .sum::<usize>()
+            .max(1);
+        let msg_height = (msg_lines as u16 + 2).clamp(3, 8);
+
         let msg_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(0)])
+            .constraints([Constraint::Length(msg_height), Constraint::Min(0)])
             .split(chunks[2]);
 
         if let Some(ref msg) = app.success_message {
@@ -69,7 +83,8 @@ fn render_provider_list(f: &mut Frame, app: &App, area: Rect) {
                     Block::default()
                         .borders(Borders::ALL)
                         .border_style(Color::Green),
-                );
+                )
+                .wrap(Wrap { trim: false });
             f.render_widget(msg_widget, msg_chunks[0]);
         } else if let Some(ref msg) = app.error_message {
             let msg_widget = Paragraph::new(msg.as_str())
@@ -78,7 +93,8 @@ fn render_provider_list(f: &mut Frame, app: &App, area: Rect) {
                     Block::default()
                         .borders(Borders::ALL)
                         .border_style(Color::Red),
-                );
+                )
+                .wrap(Wrap { trim: false });
             f.render_widget(msg_widget, msg_chunks[0]);
         }
         (Some(chunks[1]), msg_chunks[1])
@@ -409,9 +425,13 @@ fn render_delete_confirm(f: &mut Frame, app: &App, area: Rect) {
     let popup_area = centered_rect(50, 30, area);
 
     let provider_name = app
-        .providers
-        .get(app.selected_provider)
-        .map(|p| p.name.clone())
+        .delete_provider_name
+        .clone()
+        .or_else(|| {
+            app.providers
+                .get(app.selected_provider)
+                .map(|p| p.name.clone())
+        })
         .unwrap_or_else(|| "未知".to_string());
 
     let text = format!(

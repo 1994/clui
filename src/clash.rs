@@ -1,10 +1,43 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
+use reqwest::header::USER_AGENT;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default)]
 pub struct ClashClient {
     base_url: String,
+}
+
+impl ClashClient {
+    fn build_subscription_request(client: &reqwest::Client, url: &str) -> Result<reqwest::Request> {
+        client
+            .post(url)
+            .header(USER_AGENT, "clash")
+            .build()
+            .with_context(|| format!("构建订阅请求失败: {}", url))
+    }
+
+    /// 使用 clash 核心的 User-Agent 下载订阅内容
+    pub async fn fetch_subscription(&self, url: &str) -> Result<String> {
+        let client = reqwest::Client::new();
+        let request = Self::build_subscription_request(&client, url)?;
+        let response = client
+            .execute(request)
+            .await
+            .context(format!("下载订阅失败: {}", url))?;
+
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .context(format!("读取订阅响应失败: {}", url))?;
+
+        if !status.is_success() {
+            return Err(anyhow!("下载订阅失败: HTTP {} - {}", status, body));
+        }
+
+        Ok(body)
+    }
 }
 
 // ==================== Version & System ====================
@@ -368,8 +401,7 @@ impl ClashClient {
 
     fn providers_base_url(&self) -> Result<reqwest::Url> {
         let base = format!("{}/providers/proxies", self.base_url.trim_end_matches('/'));
-        reqwest::Url::parse(&base)
-            .map_err(|e| anyhow!("构造订阅 API 地址失败: {}", e))
+        reqwest::Url::parse(&base).map_err(|e| anyhow!("构造订阅 API 地址失败: {}", e))
     }
 
     fn provider_endpoint_url(&self, name: &str) -> Result<reqwest::Url> {
@@ -544,13 +576,6 @@ impl ClashClient {
         Ok(provider)
     }
 
-    pub async fn update_provider(&self, name: &str) -> Result<()> {
-        let url = self.provider_endpoint_url(name)?;
-        let client = reqwest::Client::new();
-        let response = client.put(url).send().await?;
-        Self::ensure_success_response(response, &format!("更新订阅 '{}'", name)).await
-    }
-
     pub async fn health_check_provider(&self, name: &str) -> Result<()> {
         let url = self.provider_healthcheck_endpoint_url(name)?;
         let client = reqwest::Client::new();
@@ -710,6 +735,7 @@ impl ClashClient {
 #[cfg(test)]
 mod tests {
     use super::ClashClient;
+    use reqwest::header::USER_AGENT;
 
     #[test]
     fn provider_endpoint_should_percent_encode_reserved_chars_in_name() {
@@ -735,6 +761,22 @@ mod tests {
         assert_eq!(
             url.as_str(),
             "http://127.0.0.1:9090/providers/proxies/a%2Fb/healthcheck"
+        );
+    }
+
+    #[test]
+    fn build_subscription_request_should_use_post_and_clash_user_agent() {
+        let client = reqwest::Client::new();
+        let request = ClashClient::build_subscription_request(&client, "https://example.com/sub")
+            .expect("request should be built");
+
+        assert_eq!(request.method(), reqwest::Method::POST);
+        assert_eq!(
+            request
+                .headers()
+                .get(USER_AGENT)
+                .and_then(|v| v.to_str().ok()),
+            Some("clash")
         );
     }
 }

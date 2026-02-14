@@ -13,7 +13,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
 };
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -112,6 +112,7 @@ pub struct App {
     pub input_fields: Vec<String>,
     pub input_field_index: usize,
     pub input_cursor: usize,
+    pub delete_provider_name: Option<String>,
     pub error_message: Option<String>,
     pub success_message: Option<String>,
 
@@ -187,6 +188,7 @@ impl App {
             input_fields: vec![String::new(), String::new(), String::from("86400")],
             input_field_index: 0,
             input_cursor: 0,
+            delete_provider_name: None,
             error_message: None,
             success_message: None,
             auto_update_enabled: true,
@@ -355,7 +357,10 @@ impl App {
                         name,
                         err_msg
                     ));
-                    self.error_message = Some(format!("订阅 '{}' 自动更新失败: {}", name, err_msg));
+                    self.error_message = Some(format!(
+                        "订阅 '{}' 自动更新失败: {}\n按 6 切到日志页可查看完整上下文。",
+                        name, err_msg
+                    ));
                 }
                 // 更新成功后刷新 providers 数据
                 let _ = self.refresh_data().await;
@@ -471,6 +476,19 @@ impl App {
         }
 
         Ok(())
+    }
+
+    fn resolve_provider_cache_path(&self, path: &str) -> PathBuf {
+        let provider_path = PathBuf::from(path);
+        if provider_path.is_absolute() {
+            provider_path
+        } else {
+            self.config_manager
+                .get_config_path()
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(provider_path)
+        }
     }
 
     fn note_provider_error(&mut self, message: String) {
@@ -828,6 +846,7 @@ impl App {
         self.input_fields = vec![String::new(), String::new(), String::from("86400")];
         self.input_field_index = 0;
         self.input_cursor = 0;
+        self.delete_provider_name = None;
     }
 
     pub fn open_add_provider(&mut self) {
@@ -862,62 +881,101 @@ impl App {
     }
 
     pub fn open_delete_confirm(&mut self) {
-        self.popup_mode = PopupMode::DeleteConfirm;
-        self.input_mode = InputMode::Editing;
-        self.error_message = None;
-        self.success_message = None;
+        if let Some(provider) = self.providers.get(self.selected_provider) {
+            self.popup_mode = PopupMode::DeleteConfirm;
+            self.input_mode = InputMode::Editing;
+            self.delete_provider_name = Some(provider.name.clone());
+            self.error_message = None;
+            self.success_message = None;
+        } else {
+            self.error_message = Some("当前没有可删除的订阅".to_string());
+        }
     }
 
     pub async fn confirm_delete_provider(&mut self) {
-        if let Some(provider) = self.providers.get(self.selected_provider) {
-            let name = provider.name.clone();
-            match self.config_manager.remove_provider(&name) {
-                Ok(_) => {
-                    if let Some(ref scheduler) = self.scheduler {
-                        scheduler.remove_task(&name).await;
+        let Some(name) = self.delete_provider_name.clone().or_else(|| {
+            self.providers
+                .get(self.selected_provider)
+                .map(|p| p.name.clone())
+        }) else {
+            self.error_message = Some("删除失败: 未找到目标订阅".to_string());
+            return;
+        };
+
+        let provider_cache_path = self
+            .config_manager
+            .get_providers()
+            .ok()
+            .and_then(|configs| configs.get(&name).and_then(|cfg| cfg.path.clone()))
+            .or_else(|| {
+                self.providers
+                    .iter()
+                    .find(|provider| provider.name == name)
+                    .and_then(|provider| provider.path.clone())
+            })
+            .map(|path| self.resolve_provider_cache_path(&path));
+
+        match self.config_manager.remove_provider(&name) {
+            Ok(_) => {
+                if let Some(path) = provider_cache_path {
+                    match tokio::fs::remove_file(&path).await {
+                        Ok(_) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => {
+                            self.add_log(format!(
+                                "[{}] WARN: 删除订阅 '{}' 缓存文件失败 {:?}: {}",
+                                chrono::Local::now().format("%H:%M:%S"),
+                                name,
+                                path,
+                                e
+                            ));
+                        }
                     }
-
-                    self.providers.retain(|provider| provider.name != name);
-                    self.provider_expanded = vec![false; self.providers.len()];
-                    self.provider_update_info.remove(&name);
-                    self.missing_config_providers.remove(&name);
-                    if self.providers.is_empty() {
-                        self.selected_provider = 0;
-                    } else {
-                        self.selected_provider =
-                            self.selected_provider.min(self.providers.len() - 1);
-                    }
-
-                    let reload_result = self.reload_config_and_refresh().await;
-                    let still_exists = self.providers.iter().any(|provider| provider.name == name);
-
-                    if let Err(e) = reload_result {
-                        self.add_log(format!(
-                            "[{}] WARN: 订阅 '{}' 删除后重载失败: {}",
-                            chrono::Local::now().format("%H:%M:%S"),
-                            name,
-                            e
-                        ));
-                        self.error_message = Some(format!("订阅已从配置删除，但重载失败: {}", e));
-                    } else if still_exists {
-                        self.add_log(format!(
-                            "[{}] WARN: 订阅 '{}' 删除后仍出现在核心列表中",
-                            chrono::Local::now().format("%H:%M:%S"),
-                            name
-                        ));
-                        self.error_message = Some(format!(
-                            "订阅 '{}' 删除后核心仍有缓存，请按 r 重载并查看日志",
-                            name
-                        ));
-                    } else {
-                        self.success_message = Some(format!("订阅 '{}' 已删除！", name));
-                    }
-
-                    self.close_popup();
                 }
-                Err(e) => {
-                    self.error_message = Some(format!("删除失败: {}", e));
+
+                if let Some(ref scheduler) = self.scheduler {
+                    scheduler.remove_task(&name).await;
                 }
+
+                self.providers.retain(|provider| provider.name != name);
+                self.provider_expanded = vec![false; self.providers.len()];
+                self.provider_update_info.remove(&name);
+                self.missing_config_providers.remove(&name);
+                if self.providers.is_empty() {
+                    self.selected_provider = 0;
+                } else {
+                    self.selected_provider = self.selected_provider.min(self.providers.len() - 1);
+                }
+
+                let reload_result = self.reload_config_and_refresh().await;
+                let still_exists = self.providers.iter().any(|provider| provider.name == name);
+
+                if let Err(e) = reload_result {
+                    self.add_log(format!(
+                        "[{}] WARN: 订阅 '{}' 删除后重载失败: {}",
+                        chrono::Local::now().format("%H:%M:%S"),
+                        name,
+                        e
+                    ));
+                    self.error_message = Some(format!("订阅已从配置删除，但重载失败: {}", e));
+                } else if still_exists {
+                    self.add_log(format!(
+                        "[{}] WARN: 订阅 '{}' 删除后仍出现在核心列表中",
+                        chrono::Local::now().format("%H:%M:%S"),
+                        name
+                    ));
+                    self.error_message = Some(format!(
+                        "订阅 '{}' 删除后核心仍有缓存，请按 r 重载并查看日志",
+                        name
+                    ));
+                } else {
+                    self.success_message = Some(format!("订阅 '{}' 已删除！", name));
+                }
+
+                self.close_popup();
+            }
+            Err(e) => {
+                self.error_message = Some(format!("删除失败: {}", e));
             }
         }
     }
@@ -1070,6 +1128,7 @@ impl App {
             }
             KeyCode::Char('a') => self.open_add_provider(),
             KeyCode::Char('e') => self.open_edit_provider(),
+            KeyCode::Char('d') => self.open_delete_confirm(),
             KeyCode::Char('D') => self.open_delete_confirm(),
             KeyCode::Char('U') => {
                 if let Some(ref scheduler) = self.scheduler {
@@ -1209,13 +1268,15 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{App, clear_terminal_startup_artifacts};
+    use super::{App, InputMode, PopupMode, clear_terminal_startup_artifacts};
+    use crate::{clash::ClashClient, ui::Tab};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{
         Terminal,
         backend::{Backend, TestBackend},
         buffer::Cell,
     };
+    use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -1277,5 +1338,193 @@ mod tests {
 
         assert_eq!(app.input_fields[0], "订");
         assert_eq!(app.input_cursor, 1);
+    }
+
+    #[tokio::test]
+    async fn providers_tab_should_open_delete_confirm_with_lowercase_d() {
+        let mut app = test_app();
+        app.core_ready = true;
+        app.current_tab = Tab::Providers;
+        app.clash = Some(ClashClient::new("http://127.0.0.1:9090".to_string()));
+        app.providers.push(crate::clash::Provider {
+            name: "demo".to_string(),
+            ..Default::default()
+        });
+        app.provider_expanded = vec![false];
+
+        app.handle_key_event(key(KeyCode::Char('d')))
+            .await
+            .expect("key handler should not fail");
+
+        assert_eq!(app.popup_mode, PopupMode::DeleteConfirm);
+        assert_eq!(app.input_mode, InputMode::Editing);
+    }
+
+    #[tokio::test]
+    async fn confirm_delete_provider_should_remove_provider_cache_file() {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let base_dir = std::env::temp_dir().join(format!(
+            "clash-tui-delete-provider-test-{}-{}",
+            std::process::id(),
+            timestamp
+        ));
+        let config_path = base_dir.join("config.yaml");
+        let cache_path = base_dir.join("providers").join("demo.yaml");
+
+        fs::create_dir_all(cache_path.parent().expect("cache parent should exist"))
+            .expect("should create cache directory");
+        fs::write(&cache_path, "old-cache-body").expect("should create cache file");
+        fs::write(
+            &config_path,
+            r#"
+proxy-providers:
+  demo:
+    type: http
+    url: https://example.com/sub
+    interval: 86400
+    path: ./providers/demo.yaml
+"#,
+        )
+        .expect("should write test config");
+
+        let mut app = App::with_config(config_path.clone());
+        app.providers.push(crate::clash::Provider {
+            name: "demo".to_string(),
+            ..Default::default()
+        });
+        app.provider_expanded = vec![false];
+        app.selected_provider = 0;
+
+        app.confirm_delete_provider().await;
+
+        let providers = app
+            .config_manager
+            .get_providers()
+            .expect("should read updated providers");
+        assert!(
+            !providers.contains_key("demo"),
+            "provider should be removed from config"
+        );
+        assert!(
+            !cache_path.exists(),
+            "provider cache file should be removed"
+        );
+
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[tokio::test]
+    async fn confirm_delete_provider_should_ignore_missing_cache_file() {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let base_dir = std::env::temp_dir().join(format!(
+            "clash-tui-delete-provider-missing-cache-test-{}-{}",
+            std::process::id(),
+            timestamp
+        ));
+        let config_path = base_dir.join("config.yaml");
+
+        fs::create_dir_all(&base_dir).expect("should create base directory");
+        fs::write(
+            &config_path,
+            r#"
+proxy-providers:
+  demo:
+    type: http
+    url: https://example.com/sub
+    interval: 86400
+    path: ./providers/demo.yaml
+"#,
+        )
+        .expect("should write test config");
+
+        let mut app = App::with_config(config_path.clone());
+        app.providers.push(crate::clash::Provider {
+            name: "demo".to_string(),
+            ..Default::default()
+        });
+        app.provider_expanded = vec![false];
+        app.selected_provider = 0;
+
+        app.confirm_delete_provider().await;
+
+        let providers = app
+            .config_manager
+            .get_providers()
+            .expect("should read updated providers");
+        assert!(
+            !providers.contains_key("demo"),
+            "provider should still be removed when cache file is missing"
+        );
+
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[tokio::test]
+    async fn confirm_delete_provider_should_use_locked_name_when_selection_changes() {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let base_dir = std::env::temp_dir().join(format!(
+            "clash-tui-delete-provider-locked-name-test-{}-{}",
+            std::process::id(),
+            timestamp
+        ));
+        let config_path = base_dir.join("config.yaml");
+        fs::create_dir_all(&base_dir).expect("should create base directory");
+        fs::write(
+            &config_path,
+            r#"
+proxy-providers:
+  demo-a:
+    type: http
+    url: https://example.com/a
+    interval: 86400
+    path: ./providers/demo-a.yaml
+  demo-b:
+    type: http
+    url: https://example.com/b
+    interval: 86400
+    path: ./providers/demo-b.yaml
+"#,
+        )
+        .expect("should write test config");
+
+        let mut app = App::with_config(config_path.clone());
+        app.providers.push(crate::clash::Provider {
+            name: "demo-a".to_string(),
+            ..Default::default()
+        });
+        app.providers.push(crate::clash::Provider {
+            name: "demo-b".to_string(),
+            ..Default::default()
+        });
+        app.provider_expanded = vec![false, false];
+        app.selected_provider = 0;
+
+        app.open_delete_confirm();
+        app.selected_provider = 1; // 模拟弹窗期间选择变化
+        app.confirm_delete_provider().await;
+
+        let providers = app
+            .config_manager
+            .get_providers()
+            .expect("should read updated providers");
+        assert!(
+            !providers.contains_key("demo-a"),
+            "locked provider should be deleted"
+        );
+        assert!(
+            providers.contains_key("demo-b"),
+            "other provider should remain"
+        );
+
+        let _ = fs::remove_dir_all(base_dir);
     }
 }
