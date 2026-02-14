@@ -1,0 +1,23 @@
+# Rust
+target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 项目特定
+dist/
+*.log
+config/*.yaml
+!config/config.example.yaml
+
+# 测试配置
+/test-data/
+/tmp/

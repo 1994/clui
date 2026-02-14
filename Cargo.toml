@@ -1,0 +1,71 @@
+[package]
+name = "clash-tui"
+version = "0.1.0"
+edition = "2024"
+authors = ["clash-tui contributors"]
+description = "纯 Rust 实现的 Clash TUI，集成 clash-rs 核心"
+license = "MIT"
+repository = "https://github.com/yourname/clash-tui"
+
+[dependencies]
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# 异步运行时
+tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "time", "sync", "process"] }
+
+# 序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# 网络
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# 工具
+anyhow = "1.0"
+chrono = "0.4"
+unicode-width = "0.2"
+dirs = "5"
+log = "0.4"
+async-trait = "0.1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.11"
+
+# 其他
+md5 = "0.7"
+nix = { version = "0.29", features = ["process", "fs"] }
+
+# clash-rs 核心（库模式）
+clash = { git = "https://github.com/Watfaq/clash-rs", package = "clash-lib" }
+
+[profile.release]
+# 优化级别: z = 最小体积
+opt-level = "z"
+
+# 链接时优化
+lto = true
+
+# 单一代码生成单元（更好优化）
+codegen-units = 1
+
+# 去除 panic 的栈回溯
+panic = "abort"
+
+# 去除调试符号（strip 会处理）
+debug = false
+
+[profile.release.build-override]
+opt-level = "z"
+
+# 最小体积 profile（极端优化）
+[profile.mini]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
