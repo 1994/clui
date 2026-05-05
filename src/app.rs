@@ -5,12 +5,14 @@ use crate::context::{AppContext, UiState};
 use crate::core_manager;
 use crate::event::{Event, EventHandler};
 use crate::state::{
-    AppState, Config, ConnectionsResponse, Memory, Provider, Proxy, Rule, Traffic, Version,
+    AppState, Config, ConnectionsResponse, Memory, Provider, Proxy, ProxyHistory, Rule, Traffic,
+    Version,
 };
 use crate::ui::Popup;
 use crate::updater::{UpdateEvent, Updater};
 use anyhow::Result;
 use crossterm::event::KeyEvent;
+use futures::{StreamExt, stream};
 use ratatui::{Terminal, backend::Backend};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -26,7 +28,14 @@ pub struct App {
     updater: Option<Arc<Updater>>,
     last_refresh: Instant,
     refresh_handle: Option<JoinHandle<RefreshResult>>,
+    speed_test_tx: mpsc::UnboundedSender<SpeedTestResult>,
+    speed_test_rx: mpsc::UnboundedReceiver<SpeedTestResult>,
     core_started: bool,
+}
+
+struct SpeedTestResult {
+    proxy_name: String,
+    result: Result<u32, String>,
 }
 
 struct RefreshResult {
@@ -58,6 +67,8 @@ impl App {
         };
         load_local_config_info(&config_manager, &mut state);
 
+        let (speed_test_tx, speed_test_rx) = mpsc::unbounded_channel();
+
         let ctx = AppContext {
             state,
             ui: UiState::default(),
@@ -75,6 +86,8 @@ impl App {
             updater: None,
             last_refresh: Instant::now(),
             refresh_handle: None,
+            speed_test_tx,
+            speed_test_rx,
             core_started: false,
         })
     }
@@ -217,6 +230,9 @@ impl App {
                 } => {
                     self.handle_update_event(event).await;
                 }
+                Some(result) = self.speed_test_rx.recv() => {
+                    self.handle_speed_test_result(result);
+                }
             }
         }
 
@@ -321,6 +337,12 @@ impl App {
                 }
                 Command::ProxyNext => {
                     self.switch_selected_proxy_by(1);
+                }
+                Command::ProxySpeedTest => {
+                    self.start_selected_speed_test();
+                }
+                Command::ProxySpeedTestAll => {
+                    self.start_all_speed_tests();
                 }
                 Command::ProviderUpdate => {
                     self.update_selected_provider().await;
@@ -868,6 +890,100 @@ impl App {
         self.start_refresh();
     }
 
+    fn start_selected_speed_test(&mut self) {
+        let Some(name) = self
+            .ctx
+            .state
+            .proxies
+            .get(self.ctx.ui.proxy_selected)
+            .map(|proxy| proxy.name.clone())
+        else {
+            self.ctx.ui.error_message = Some("没有可测速的代理组".to_string());
+            return;
+        };
+
+        self.start_speed_test(name);
+    }
+
+    fn start_all_speed_tests(&mut self) {
+        let names: Vec<String> = self
+            .ctx
+            .state
+            .proxies
+            .iter()
+            .map(|proxy| proxy.name.clone())
+            .collect();
+        if names.is_empty() {
+            self.ctx.ui.error_message = Some("没有可测速的代理组".to_string());
+            return;
+        }
+
+        for name in &names {
+            self.ctx.ui.testing_proxies.insert(name.clone());
+        }
+        self.ctx.ui.success_message = Some(format!("正在测速 {} 个代理组", names.len()));
+
+        let client = self.ctx.client.clone();
+        let tx = self.speed_test_tx.clone();
+        tokio::spawn(async move {
+            stream::iter(names)
+                .for_each_concurrent(8, |name| {
+                    let client = client.clone();
+                    let tx = tx.clone();
+                    async move {
+                        let result = client
+                            .test_proxy_delay(&name, None, Some(3000))
+                            .await
+                            .map_err(|e| e.to_string());
+                        let _ = tx.send(SpeedTestResult {
+                            proxy_name: name,
+                            result,
+                        });
+                    }
+                })
+                .await;
+        });
+    }
+
+    fn start_speed_test(&mut self, name: String) {
+        self.ctx.ui.testing_proxies.insert(name.clone());
+        self.ctx.ui.success_message = Some(format!("正在测速 {}", name));
+
+        let client = self.ctx.client.clone();
+        let tx = self.speed_test_tx.clone();
+        tokio::spawn(async move {
+            let result = client
+                .test_proxy_delay(&name, None, Some(3000))
+                .await
+                .map_err(|e| e.to_string());
+            let _ = tx.send(SpeedTestResult {
+                proxy_name: name,
+                result,
+            });
+        });
+    }
+
+    fn handle_speed_test_result(&mut self, result: SpeedTestResult) {
+        self.ctx.ui.testing_proxies.remove(&result.proxy_name);
+        match result.result {
+            Ok(delay) => {
+                update_proxy_delay(&mut self.ctx.state.proxies, &result.proxy_name, delay);
+                if let Some(proxy) = self.ctx.state.all_proxies.get_mut(&result.proxy_name) {
+                    set_proxy_delay(proxy, delay);
+                }
+                if self.ctx.ui.testing_proxies.is_empty() {
+                    self.ctx.ui.success_message = Some("测速完成".to_string());
+                }
+            }
+            Err(e) => {
+                log::warn!("测速失败 {}: {}", result.proxy_name, e);
+                if self.ctx.ui.testing_proxies.is_empty() {
+                    self.ctx.ui.error_message = Some(format!("测速失败: {}", e));
+                }
+            }
+        }
+    }
+
     fn expire_toast(&mut self) {
         let current = self
             .ctx
@@ -912,6 +1028,25 @@ impl App {
         if self.ctx.state.logs.len() > MAX_LOGS {
             self.ctx.state.logs.remove(0);
         }
+    }
+}
+
+fn update_proxy_delay(proxies: &mut [Proxy], name: &str, delay: u32) {
+    if let Some(proxy) = proxies.iter_mut().find(|proxy| proxy.name == name) {
+        set_proxy_delay(proxy, delay);
+    }
+}
+
+fn set_proxy_delay(proxy: &mut Proxy, delay: u32) {
+    let history = ProxyHistory {
+        time: chrono::Local::now().to_rfc3339(),
+        delay,
+        mean_delay: None,
+    };
+    if let Some(first) = proxy.history.first_mut() {
+        *first = history;
+    } else {
+        proxy.history.push(history);
     }
 }
 

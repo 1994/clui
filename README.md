@@ -1,124 +1,195 @@
 # Clash TUI
 
-Clash/Mihomo TUI，随安装包携带 Mihomo 核心。
+An htop-like terminal UI for Clash/Mihomo. It ships with a bundled Mihomo core in release packages, so first startup does not depend on downloading a core at runtime.
 
-## 特性
+![Clash TUI overview screenshot](example/Screenshot.png)
 
-- 🦀 Rust TUI
-- 📦 随包携带 Mihomo 核心，不运行时下载
-- 🖥️ 直观的 TUI 界面
-- 🔧 支持静默守护模式
-- 📝 订阅自动更新
+## Features
 
-## 快速开始
+- Terminal dashboard for traffic, connections, proxy groups, providers, rules, and logs
+- Bundled Mihomo core support for offline-friendly installs
+- Subscription add/edit/delete/update flows from the TUI
+- Live proxy group switching and latency testing
+- Clear proxy entry information, including mixed, HTTP, SOCKS, LAN, and controller ports
+- File-based logs with daily rotation-friendly paths
+- Daemon mode for background subscription updates
 
-### 安装
+## Quick Start
+
+### Install
 
 ```bash
-# 方式1: 使用安装脚本
+# Option 1: install from this repository
 ./install.sh
 
-# 方式2: 使用 Make
+# Option 2: install with Make
 make install
 
-# 方式3: 手动复制
+# Option 3: build and copy manually
 make release
 sudo cp target/release/clash-tui /usr/local/bin/
 ```
 
-### 使用
+`make install` and `./install.sh` expect a Mihomo binary to be available locally, for example at `third_party/mihomo/<platform>-<arch>/mihomo` or `bin/mihomo`. Release archives created by `make dist` include that core under `bin/mihomo`.
+
+### Run
 
 ```bash
-# 启动 TUI 界面（默认）
+# Start the TUI. This is the default command.
 clash-tui
 
-# 如果已在运行，会显示当前状态
-clash-tui
-# 输出: clash-tui 已在运行 (PID: 12345)
-#       模式: Tui
-#       API: http://127.0.0.1:9090
-#       ...
+# Start explicitly in TUI mode.
+clash-tui tui
 
-# 后台守护模式
+# Run background subscription updates.
 clash-tui daemon
 
-# 停止 Mihomo 核心（保持 clash-tui 运行）
-clash-tui stop
-
-# 重启 Mihomo 核心
-clash-tui restart
-
-# 查看状态
+# Show current process/core status.
 clash-tui status
 
-# 完全退出（clash-tui + Mihomo）
+# Stop the Mihomo core managed by clash-tui.
+clash-tui stop
+
+# Restart the Mihomo core.
+clash-tui restart
+
+# Quit clash-tui and the managed Mihomo core.
 clash-tui quit
 
-# 指定配置文件
+# Use a specific config file.
 clash-tui -c ~/.config/clash/config.yaml
 ```
 
-## 构建
+If another instance is already running, `clash-tui` prints the current status instead of starting a second TUI.
 
-```bash
-# 快速构建
-make build
+## Using The TUI
 
-# 发布构建（优化）
-make release
+Common shortcuts:
 
-# 创建发布包时必须提供 Mihomo core
-make dist MIHOMO_BIN=/path/to/mihomo
+| Key | Action |
+| --- | --- |
+| `1`-`6` | Switch tabs |
+| `Tab` / `Shift+Tab` | Next / previous tab |
+| `r` or `F5` | Refresh data |
+| `m` or `F6` | Switch Clash mode |
+| `F1` | Toggle help |
+| `q` or `F10` | Quit |
 
-# 最小体积构建
-make mini
+Proxy tab shortcuts:
 
-# 创建发布包
-make dist
+| Key | Action |
+| --- | --- |
+| `Up` / `Down` | Move selection |
+| `Left` / `Right` | Switch to previous / next node in the selected group |
+| `Enter` or `Space` | Open node picker |
+| `s` | Test latency for the selected proxy group |
+| `S` | Test latency for all proxy groups |
+| `/` | Search |
+| `F4` | Sort |
+
+Provider tab shortcuts:
+
+| Key | Action |
+| --- | --- |
+| `a` | Add provider |
+| `e` | Edit provider |
+| `d` | Delete provider |
+| `u` | Update selected provider |
+| `U` | Update all providers |
+| `h` | Run provider health check |
+
+## Proxy Ports
+
+The overview tab shows the ports that can actually be used by your system or browser:
+
+| Field | Meaning |
+| --- | --- |
+| `Mixed` | Mixed HTTP/SOCKS proxy, usually the main browser/system proxy |
+| `HTTP` | HTTP proxy port, if enabled |
+| `SOCKS` | SOCKS proxy port, if enabled |
+| `LAN` | Whether remote LAN clients are allowed |
+| `Controller API` | Mihomo external controller address, used by the TUI |
+
+Default generated config:
+
+```yaml
+mixed-port: 7890
+external-controller: 127.0.0.1:9090
+allow-lan: true
+bind-address: '*'
+mode: rule
+log-level: info
 ```
 
-## 配置
+For a local browser or OS proxy, use `127.0.0.1:7890` when `mixed-port` is enabled.
 
-### 配置文件
+## Configuration
 
-位置（按优先级）：
-1. `-c / --config` 指定的路径
+Config lookup order:
+
+1. Path passed with `-c` / `--config`
 2. `~/.config/clash-tui/config.yaml`
-3. `./config.yaml`
+3. Existing Mihomo/Clash config locations detected by the app
+4. `./config.yaml`
 
-### 日志文件
+When no config exists, clash-tui creates a minimal Mihomo config with one `Proxy` selector and `DIRECT` fallback so the TUI can start immediately. Add your subscription in the Providers tab.
 
-日志默认持久化到文件，按天轮转，自动保留最近7天：
+Local runtime files such as `config.yaml`, `cache.db`, and `target/` are ignored by git.
 
-- **macOS**: `~/Library/Application Support/clash-tui/logs/`
-- **Linux**: `~/.config/clash-tui/logs/`
+## Logs
 
-查看日志：
+Application logs are written to files by default:
+
+- macOS: `~/Library/Application Support/clash-tui/logs/`
+- Linux: `~/.config/clash-tui/logs/`
+
+Useful commands:
+
 ```bash
-# 查看最新日志
+# Follow the latest TUI log.
 tail -f ~/.config/clash-tui/logs/clash-tui.log
 
-# 查看当天日志
-cat ~/.config/clash-tui/logs/clash-tui.log
-```
+# Follow the bundled core log.
+tail -f ~/.config/clash-tui/logs/mihomo-core.log
 
-### 日志级别
-
-```bash
-# 指定日志级别（默认: info）
+# Increase log verbosity.
 clash-tui --log-level debug
-clash-tui --log-level warn
-
-# 或通过环境变量
 RUST_LOG=debug clash-tui
 ```
 
-## 系统要求
+## Build
+
+```bash
+# Fast development build.
+make build
+
+# Run from source.
+cargo run
+
+# Optimized release build.
+make release
+
+# Small optimized build.
+make mini
+
+# Create a release archive with the Mihomo core bundled.
+make dist MIHOMO_BIN=/path/to/mihomo
+```
+
+## Development
+
+```bash
+cargo fmt --check
+cargo test
+cargo clippy --all-targets --all-features -- -D warnings
+```
+
+## Requirements
 
 - Rust 1.75+
-- 打包时提供对应平台的 Mihomo 二进制
-- macOS / Linux
+- macOS or Linux
+- A platform-matching Mihomo binary when installing or packaging
 
-## 许可证
+## License
 
 MIT

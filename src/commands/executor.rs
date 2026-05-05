@@ -51,25 +51,8 @@ impl CommandExecutor {
             }
             Command::ProxyPrev => {}
             Command::ProxyNext => {}
-            Command::ProxySpeedTest => {
-                if let Some(proxy) = ctx.state.proxies.get(ctx.ui.proxy_selected) {
-                    let client = ctx.client.clone();
-                    let name = proxy.name.clone();
-                    tokio::spawn(async move {
-                        let _ = client.test_proxy_delay(&name, None, None).await;
-                    });
-                }
-            }
-            Command::ProxySpeedTestAll => {
-                let client = ctx.client.clone();
-                let proxies: Vec<String> =
-                    ctx.state.proxies.iter().map(|p| p.name.clone()).collect();
-                tokio::spawn(async move {
-                    for name in proxies {
-                        let _ = client.test_proxy_delay(&name, None, None).await;
-                    }
-                });
-            }
+            Command::ProxySpeedTest => {}
+            Command::ProxySpeedTestAll => {}
 
             Command::ProviderToggleExpand => {
                 let idx = ctx.ui.provider_selected;

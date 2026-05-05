@@ -81,7 +81,10 @@ pub fn render(f: &mut Frame, state: &AppState, ui: &mut UiState, area: Rect) {
         .map(|(offset, (_idx, p))| {
             let row_index = start + offset;
             let is_selected = row_index == ui.proxy_selected;
-            let delay = if p.history.is_empty() {
+            let is_testing = ui.testing_proxies.contains(&p.name);
+            let delay = if is_testing {
+                "测速中".to_string()
+            } else if p.history.is_empty() {
                 "-".to_string()
             } else {
                 format!("{}ms", p.history[0].delay)
@@ -101,10 +104,15 @@ pub fn render(f: &mut Frame, state: &AppState, ui: &mut UiState, area: Rect) {
                 Style::default()
             };
 
-            let delay_style = if is_selected {
-                base_style.fg(delay_color(p.history.first().map(|h| h.delay).unwrap_or(0)))
+            let delay_fg = if is_testing {
+                Color::Cyan
             } else {
-                Style::default().fg(delay_color(p.history.first().map(|h| h.delay).unwrap_or(0)))
+                delay_color(p.history.first().map(|h| h.delay).unwrap_or(0))
+            };
+            let delay_style = if is_selected {
+                base_style.fg(delay_fg)
+            } else {
+                Style::default().fg(delay_fg)
             };
 
             Row::new(vec![
