@@ -55,6 +55,9 @@ pub fn bundled_core_path() -> Result<PathBuf> {
     } else {
         "mihomo"
     };
+    if let Some(path) = embedded_core_path(name)? {
+        return Ok(path);
+    }
     let platform = if cfg!(target_os = "macos") {
         "macos"
     } else if cfg!(target_os = "linux") {
@@ -92,6 +95,52 @@ pub fn bundled_core_path() -> Result<PathBuf> {
         name,
         name
     )
+}
+
+#[cfg(feature = "embedded-core")]
+fn embedded_core_path(name: &str) -> Result<Option<PathBuf>> {
+    let core_bytes = include_bytes!(concat!(env!("OUT_DIR"), "/mihomo"));
+    if core_bytes.is_empty() {
+        return Ok(None);
+    }
+
+    let hash = format!("{:x}", md5::compute(core_bytes));
+    let core_dir = dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("clash-tui")
+        .join("embedded-core")
+        .join(hash);
+    std::fs::create_dir_all(&core_dir).context("create embedded core cache directory")?;
+
+    let path = core_dir.join(name);
+    let should_write = std::fs::metadata(&path)
+        .map(|metadata| metadata.len() != core_bytes.len() as u64)
+        .unwrap_or(true);
+    if should_write {
+        std::fs::write(&path, core_bytes).context("write embedded mihomo core")?;
+    }
+    make_executable(&path)?;
+    Ok(Some(path))
+}
+
+#[cfg(not(feature = "embedded-core"))]
+fn embedded_core_path(_name: &str) -> Result<Option<PathBuf>> {
+    Ok(None)
+}
+
+#[cfg(all(feature = "embedded-core", unix))]
+fn make_executable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+#[cfg(all(feature = "embedded-core", not(unix)))]
+fn make_executable(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 /// Check if core API is reachable.

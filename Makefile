@@ -6,6 +6,7 @@ BINARY_NAME = clash-tui
 DIST_DIR = dist
 TARGET_DIR = target
 RELEASE_BIN = $(TARGET_DIR)/release/$(BINARY_NAME)
+EMBEDDED_BIN = $(TARGET_DIR)/release/$(BINARY_NAME)-embedded
 MIHOMO_BIN ?= third_party/mihomo/$(PLATFORM)-$(ARCH)/mihomo
 CORE_INSTALL_DIR = /opt/clashtui
 
@@ -27,8 +28,9 @@ endif
 
 VERSION = $(shell grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
 RELEASE_NAME = $(BINARY_NAME)-v$(VERSION)-$(PLATFORM)-$(ARCH)
+EMBEDDED_RELEASE_NAME = $(RELEASE_NAME)-embedded
 
-.PHONY: all build release mini run clean install dist help check-core
+.PHONY: all build release release-embedded mini run clean install dist dist-sidecar dist-embedded dist-all help check-core
 
 # 默认目标
 all: release
@@ -38,12 +40,20 @@ build:
 	@echo "🔨 快速构建..."
 	cargo build
 
-# 发布构建（优化）
+# 发布构建（优化，不内嵌 Mihomo）
 release:
-	@echo "🚀 构建发布版本..."
+	@echo "🚀 构建发布版本（不内嵌 Mihomo core）..."
 	cargo build --release
 	@echo "✅ 构建完成: $(RELEASE_BIN)"
 	@ls -lh $(RELEASE_BIN)
+
+# 单文件发布构建（内嵌 Mihomo）
+release-embedded: check-core
+	@echo "🚀 构建单文件发布版本（内嵌 Mihomo core: $(MIHOMO_BIN)）..."
+	MIHOMO_BIN="$(abspath $(MIHOMO_BIN))" cargo build --release --features embedded-core
+	cp $(RELEASE_BIN) $(EMBEDDED_BIN)
+	@echo "✅ 构建完成: $(EMBEDDED_BIN)"
+	@ls -lh $(EMBEDDED_BIN)
 
 # 最小体积构建（极端优化）
 mini:
@@ -107,9 +117,12 @@ uninstall:
 	rm -f $(CORE_INSTALL_DIR)/mihomo
 	@echo "✅ 已卸载"
 
-# 创建发布压缩包
-dist: release check-core
-	@echo "📦 创建发布包..."
+# 默认发布包：sidecar 方式，包内包含 bin/mihomo
+dist: dist-sidecar
+
+# 创建 sidecar 发布压缩包（TUI + bin/mihomo）
+dist-sidecar: release check-core
+	@echo "📦 创建 sidecar 发布包（包含 bin/mihomo）..."
 	@mkdir -p $(DIST_DIR)/$(RELEASE_NAME)
 	
 	# 复制二进制文件
@@ -141,7 +154,7 @@ dist: release check-core
 	
 	# 创建启动脚本
 	@echo '#!/bin/bash' > $(DIST_DIR)/$(RELEASE_NAME)/start.sh
-	@echo 'cd "$$(dirname "$0")"' >> $(DIST_DIR)/$(RELEASE_NAME)/start.sh
+	@echo 'cd "$$(dirname "$$0")"' >> $(DIST_DIR)/$(RELEASE_NAME)/start.sh
 	@echo './$(BINARY_NAME) tui' >> $(DIST_DIR)/$(RELEASE_NAME)/start.sh
 	@chmod +x $(DIST_DIR)/$(RELEASE_NAME)/start.sh
 	
@@ -151,6 +164,26 @@ dist: release check-core
 	@echo "✅ 发布包已创建: $(DIST_DIR)/$(RELEASE_NAME).tar.gz"
 	@echo "📊 文件大小:"
 	@ls -lh $(DIST_DIR)/$(RELEASE_NAME).tar.gz
+
+# 创建单文件发布压缩包（clash-tui 二进制内嵌 Mihomo）
+dist-embedded: release-embedded
+	@echo "📦 创建 embedded 发布包（单个二进制内嵌 Mihomo）..."
+	@mkdir -p $(DIST_DIR)/$(EMBEDDED_RELEASE_NAME)
+	cp $(EMBEDDED_BIN) $(DIST_DIR)/$(EMBEDDED_RELEASE_NAME)/$(BINARY_NAME)
+	chmod +x $(DIST_DIR)/$(EMBEDDED_RELEASE_NAME)/$(BINARY_NAME)
+	@echo "# $(BINARY_NAME) v$(VERSION) embedded" > $(DIST_DIR)/$(EMBEDDED_RELEASE_NAME)/README.txt
+	@echo "" >> $(DIST_DIR)/$(EMBEDDED_RELEASE_NAME)/README.txt
+	@echo "This package contains a single clash-tui binary with Mihomo embedded." >> $(DIST_DIR)/$(EMBEDDED_RELEASE_NAME)/README.txt
+	@echo "" >> $(DIST_DIR)/$(EMBEDDED_RELEASE_NAME)/README.txt
+	@echo "Run:" >> $(DIST_DIR)/$(EMBEDDED_RELEASE_NAME)/README.txt
+	@echo "  ./$(BINARY_NAME)" >> $(DIST_DIR)/$(EMBEDDED_RELEASE_NAME)/README.txt
+	cd $(DIST_DIR) && tar czf $(EMBEDDED_RELEASE_NAME).tar.gz $(EMBEDDED_RELEASE_NAME)
+	@echo "✅ 发布包已创建: $(DIST_DIR)/$(EMBEDDED_RELEASE_NAME).tar.gz"
+	@echo "📊 文件大小:"
+	@ls -lh $(DIST_DIR)/$(EMBEDDED_RELEASE_NAME).tar.gz
+
+# 同时创建 sidecar 和 embedded 两种发布包
+dist-all: dist-sidecar dist-embedded
 
 # 查看二进制大小
 size: release
@@ -182,10 +215,13 @@ help:
 	@echo ""
 	@echo "使用方法:"
 	@echo "  make build      - 快速开发构建"
-	@echo "  make release    - 发布构建（优化）"
+	@echo "  make release    - 发布构建（不内嵌 Mihomo）"
+	@echo "  make release-embedded MIHOMO_BIN=/path/to/mihomo - 单文件内嵌 Mihomo 构建"
 	@echo "  make mini       - 最小体积构建"
 	@echo "  make run        - 运行开发版本"
-	@echo "  make dist       - 创建发布压缩包"
+	@echo "  make dist       - 创建 sidecar 发布包（默认，包含 bin/mihomo）"
+	@echo "  make dist-embedded MIHOMO_BIN=/path/to/mihomo - 创建单文件内嵌发布包"
+	@echo "  make dist-all MIHOMO_BIN=/path/to/mihomo - 同时创建两种发布包"
 	@echo "  make install    - 安装到 /usr/local/bin"
 	@echo "  make clean      - 清理构建"
 	@echo "  make size       - 查看二进制大小"

@@ -169,11 +169,20 @@ cargo run
 # Optimized release build.
 make release
 
+# Single-binary release build with Mihomo embedded.
+make release-embedded MIHOMO_BIN=/path/to/mihomo
+
 # Small optimized build.
 make mini
 
-# Create a release archive with the Mihomo core bundled.
+# Create a sidecar release archive: clash-tui + bin/mihomo.
 make dist MIHOMO_BIN=/path/to/mihomo
+
+# Create a single-binary release archive with Mihomo embedded.
+make dist-embedded MIHOMO_BIN=/path/to/mihomo
+
+# Create both release archive types.
+make dist-all MIHOMO_BIN=/path/to/mihomo
 ```
 
 ## Development
