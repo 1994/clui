@@ -6,6 +6,8 @@ BINARY_NAME = clash-tui
 DIST_DIR = dist
 TARGET_DIR = target
 RELEASE_BIN = $(TARGET_DIR)/release/$(BINARY_NAME)
+MIHOMO_BIN ?= third_party/mihomo/$(PLATFORM)-$(ARCH)/mihomo
+CORE_INSTALL_DIR = /opt/clashtui
 
 # 检测平台
 UNAME_S := $(shell uname -s)
@@ -26,7 +28,7 @@ endif
 VERSION = $(shell grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
 RELEASE_NAME = $(BINARY_NAME)-v$(VERSION)-$(PLATFORM)-$(ARCH)
 
-.PHONY: all build release mini run clean install dist help
+.PHONY: all build release mini run clean install dist help check-core
 
 # 默认目标
 all: release
@@ -67,7 +69,7 @@ run-daemon:
 
 # 停止服务
 stop:
-	@echo "🛑 停止 clash-rs..."
+	@echo "🛑 停止 Mihomo..."
 	./$(RELEASE_BIN) stop 2>/dev/null || cargo run -- stop
 
 # 查看状态
@@ -81,25 +83,40 @@ clean:
 	cargo clean
 	rm -rf $(DIST_DIR)
 
+# 检查随包 Mihomo core
+check-core:
+	@if [ ! -f "$(MIHOMO_BIN)" ]; then \
+		echo "❌ 未找到 Mihomo core: $(MIHOMO_BIN)"; \
+		echo "请先把对应平台的 mihomo 二进制放到该路径，或执行: make dist MIHOMO_BIN=/path/to/mihomo"; \
+		exit 1; \
+	fi
+
 # 安装到系统（需要 sudo）
-install: release
+install: release check-core
 	@echo "📥 安装到 /usr/local/bin..."
 	install -m 755 $(RELEASE_BIN) /usr/local/bin/$(BINARY_NAME)
+	@echo "📥 安装 Mihomo core 到 $(CORE_INSTALL_DIR)..."
+	install -d $(CORE_INSTALL_DIR)
+	install -m 755 $(MIHOMO_BIN) $(CORE_INSTALL_DIR)/mihomo
 	@echo "✅ 安装完成: /usr/local/bin/$(BINARY_NAME)"
 
 # 卸载
 uninstall:
 	@echo "🗑️  卸载..."
 	rm -f /usr/local/bin/$(BINARY_NAME)
+	rm -f $(CORE_INSTALL_DIR)/mihomo
 	@echo "✅ 已卸载"
 
 # 创建发布压缩包
-dist: release
+dist: release check-core
 	@echo "📦 创建发布包..."
 	@mkdir -p $(DIST_DIR)/$(RELEASE_NAME)
 	
 	# 复制二进制文件
 	cp $(RELEASE_BIN) $(DIST_DIR)/$(RELEASE_NAME)/
+	mkdir -p $(DIST_DIR)/$(RELEASE_NAME)/bin
+	cp $(MIHOMO_BIN) $(DIST_DIR)/$(RELEASE_NAME)/bin/mihomo
+	chmod +x $(DIST_DIR)/$(RELEASE_NAME)/bin/mihomo
 	
 	# 创建默认配置
 	@mkdir -p $(DIST_DIR)/$(RELEASE_NAME)/config

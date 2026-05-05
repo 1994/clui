@@ -1,11 +1,11 @@
 # Clash TUI
 
-纯 Rust 实现的 Clash TUI，集成 clash-rs 核心。
+Clash/Mihomo TUI，随安装包携带 Mihomo 核心。
 
 ## 特性
 
-- 🦀 纯 Rust 实现，单二进制文件
-- 📦 内置 clash-rs 核心，无需外部依赖
+- 🦀 Rust TUI
+- 📦 随包携带 Mihomo 核心，不运行时下载
 - 🖥️ 直观的 TUI 界面
 - 🔧 支持静默守护模式
 - 📝 订阅自动更新
@@ -42,16 +42,16 @@ clash-tui
 # 后台守护模式
 clash-tui daemon
 
-# 停止 clash-rs 核心（保持 clash-tui 运行）
+# 停止 Mihomo 核心（保持 clash-tui 运行）
 clash-tui stop
 
-# 重启 clash-rs 核心
+# 重启 Mihomo 核心
 clash-tui restart
 
 # 查看状态
 clash-tui status
 
-# 完全退出（clash-tui + clash-rs）
+# 完全退出（clash-tui + Mihomo）
 clash-tui quit
 
 # 指定配置文件
@@ -66,6 +66,9 @@ make build
 
 # 发布构建（优化）
 make release
+
+# 创建发布包时必须提供 Mihomo core
+make dist MIHOMO_BIN=/path/to/mihomo
 
 # 最小体积构建
 make mini
@@ -112,7 +115,8 @@ RUST_LOG=debug clash-tui
 
 ## 系统要求
 
-- Rust 1.75+ (nightly 用于库模式)
+- Rust 1.75+
+- 打包时提供对应平台的 Mihomo 二进制
 - macOS / Linux
 
 ## 许可证
