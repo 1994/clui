@@ -62,7 +62,9 @@ pub fn render(f: &mut Frame, state: &AppState, ui: &mut UiState, area: Rect) {
                     Style::default()
                 };
 
-                let (status_text, status_color) = if !p.proxies.is_empty() {
+                let (status_text, status_color) = if ui.updating_providers.contains(&p.name) {
+                    ("更新中".to_string(), Color::Cyan)
+                } else if !p.proxies.is_empty() {
                     ("正常".to_string(), Color::Green)
                 } else if p.updated_at.is_none() || p.updated_at.as_ref().unwrap().is_empty() {
                     ("待更新".to_string(), Color::Yellow)

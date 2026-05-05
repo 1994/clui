@@ -5,6 +5,18 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ClashConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+
+    #[serde(rename = "socks-port", skip_serializing_if = "Option::is_none")]
+    pub socks_port: Option<u16>,
+
+    #[serde(rename = "redir-port", skip_serializing_if = "Option::is_none")]
+    pub redir_port: Option<u16>,
+
+    #[serde(rename = "tproxy-port", skip_serializing_if = "Option::is_none")]
+    pub tproxy_port: Option<u16>,
+
     #[serde(rename = "mixed-port", skip_serializing_if = "Option::is_none")]
     pub mixed_port: Option<u16>,
 
@@ -19,6 +31,12 @@ pub struct ClashConfig {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+
+    #[serde(rename = "allow-lan", skip_serializing_if = "Option::is_none")]
+    pub allow_lan: Option<bool>,
+
+    #[serde(rename = "bind-address", skip_serializing_if = "Option::is_none")]
+    pub bind_address: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub log_level: Option<String>,

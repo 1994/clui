@@ -174,8 +174,6 @@ fn render_info_panel(f: &mut Frame, state: &AppState, area: Rect) {
         ]));
     }
 
-    lines.push(Line::from(""));
-
     if let Some(ref mem) = state.memory {
         let mem_mb = mem.inuse as f64 / 1024.0 / 1024.0;
         let mem_pct = (mem_mb / 512.0).min(1.0); // assume 512MB max gauge
@@ -206,6 +204,82 @@ fn render_info_panel(f: &mut Frame, state: &AppState, area: Rect) {
     }
 
     lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::styled(
+        "代理入口",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    let proxy_config = state.proxy_config.as_ref().or(state.config.as_ref());
+    if let Some(config) = proxy_config {
+        let host = proxy_host(config);
+        if let Some(port) = config.mixed_port {
+            lines.push(key_value_line(
+                "Mixed: ",
+                format!("{}:{}", host, port),
+                Color::Green,
+            ));
+            lines.push(key_value_line("用途: ", "系统/浏览器代理", Color::Gray));
+        } else {
+            lines.push(key_value_line("Mixed: ", "未启用", Color::Yellow));
+        }
+        if let Some(port) = config.port {
+            lines.push(key_value_line(
+                "HTTP: ",
+                format!("{}:{}", host, port),
+                Color::White,
+            ));
+        }
+        if let Some(port) = config.socks_port {
+            lines.push(key_value_line(
+                "SOCKS: ",
+                format!("{}:{}", host, port),
+                Color::White,
+            ));
+        }
+        if let Some(port) = config.redir_port {
+            lines.push(key_value_line(
+                "Redir: ",
+                format!("{}:{}", host, port),
+                Color::White,
+            ));
+        }
+        if let Some(port) = config.tproxy_port {
+            lines.push(key_value_line(
+                "TProxy: ",
+                format!("{}:{}", host, port),
+                Color::White,
+            ));
+        }
+        let lan = if config.allow_lan { "允许" } else { "关闭" };
+        lines.push(key_value_line(
+            "局域网: ",
+            format!("{} {}", lan, bind_label(&config.bind_address)),
+            if config.allow_lan {
+                Color::Green
+            } else {
+                Color::Gray
+            },
+        ));
+    } else {
+        lines.push(key_value_line("Mixed: ", "等待配置加载", Color::Yellow));
+    }
+    if !state.api_url.is_empty() {
+        lines.push(key_value_line(
+            "控制 API: ",
+            api_addr(&state.api_url),
+            Color::Gray,
+        ));
+    }
+    if !state.config_path.is_empty() {
+        lines.push(key_value_line(
+            "配置文件: ",
+            compact_path(&state.config_path, inner.width.saturating_sub(12) as usize),
+            Color::DarkGray,
+        ));
+    }
+
+    lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled("活跃连接: ", Style::default().fg(Color::Gray)),
         Span::styled(
@@ -230,6 +304,64 @@ fn render_info_panel(f: &mut Frame, state: &AppState, area: Rect) {
 
     let info = Paragraph::new(lines).alignment(Alignment::Left);
     f.render_widget(info, inner);
+}
+
+fn key_value_line(label: &str, value: impl Into<String>, color: Color) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(label.to_string(), Style::default().fg(Color::Gray)),
+        Span::styled(value.into(), Style::default().fg(color)),
+    ])
+}
+
+fn proxy_host(config: &crate::state::Config) -> String {
+    if config.allow_lan {
+        let bind = config.bind_address.trim();
+        if !bind.is_empty() && bind != "*" && bind != "0.0.0.0" {
+            bind.to_string()
+        } else {
+            "127.0.0.1".to_string()
+        }
+    } else {
+        "127.0.0.1".to_string()
+    }
+}
+
+fn bind_label(bind_address: &str) -> String {
+    let bind = bind_address.trim();
+    if bind.is_empty() {
+        String::new()
+    } else {
+        format!("bind={}", bind)
+    }
+}
+
+fn api_addr(api_url: &str) -> String {
+    api_url
+        .strip_prefix("http://")
+        .or_else(|| api_url.strip_prefix("https://"))
+        .unwrap_or(api_url)
+        .to_string()
+}
+
+fn compact_path(path: &str, max_width: usize) -> String {
+    let char_count = path.chars().count();
+    if max_width == 0 || char_count <= max_width {
+        return path.to_string();
+    }
+    if max_width <= 3 {
+        return "...".to_string();
+    }
+
+    let keep = max_width - 3;
+    let suffix: String = path
+        .chars()
+        .rev()
+        .take(keep)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("...{}", suffix)
 }
 
 fn render_connections_table(f: &mut Frame, state: &AppState, _ui: &UiState, area: Rect) {

@@ -49,6 +49,8 @@ impl CommandExecutor {
                     };
                 }
             }
+            Command::ProxyPrev => {}
+            Command::ProxyNext => {}
             Command::ProxySpeedTest => {
                 if let Some(proxy) = ctx.state.proxies.get(ctx.ui.proxy_selected) {
                     let client = ctx.client.clone();

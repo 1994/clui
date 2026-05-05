@@ -54,6 +54,8 @@ impl CommandRegistry {
         proxies.insert(KeyCode::End, Command::End);
         proxies.insert(KeyCode::Enter, Command::ProxySelect);
         proxies.insert(KeyCode::Char(' '), Command::ProxySelect);
+        proxies.insert(KeyCode::Left, Command::ProxyPrev);
+        proxies.insert(KeyCode::Right, Command::ProxyNext);
         proxies.insert(KeyCode::Char('s'), Command::ProxySpeedTest);
         proxies.insert(KeyCode::Char('S'), Command::ProxySpeedTestAll);
         by_tab.insert(Tab::Proxies, proxies);

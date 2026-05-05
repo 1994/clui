@@ -295,6 +295,9 @@ pub struct Traffic {
 pub struct AppState {
     pub version: Option<Version>,
     pub config: Option<Config>,
+    pub proxy_config: Option<Config>,
+    pub api_url: String,
+    pub config_path: String,
     pub memory: Option<Memory>,
     pub proxies: Vec<Proxy>,
     pub all_proxies: HashMap<String, Proxy>,

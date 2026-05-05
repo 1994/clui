@@ -1,6 +1,6 @@
 use crate::client::ClashClient;
 use crate::commands::{AppModeKind, Command, CommandExecutor, CommandRegistry};
-use crate::config::ConfigManager;
+use crate::config::{ClashConfig, ConfigManager};
 use crate::context::{AppContext, UiState};
 use crate::core_manager;
 use crate::event::{Event, EventHandler};
@@ -48,11 +48,18 @@ impl App {
     pub fn new(config_path: Option<std::path::PathBuf>) -> Result<Self> {
         let config_manager = ConfigManager::new(config_path)?;
         let api_url = config_manager.get_api_url();
-        let client = ClashClient::new(api_url);
+        let client = ClashClient::new(api_url.clone());
         let event_handler = EventHandler::new(Duration::from_millis(100));
 
+        let mut state = AppState {
+            api_url: api_url.clone(),
+            config_path: config_manager.config_path().display().to_string(),
+            ..Default::default()
+        };
+        load_local_config_info(&config_manager, &mut state);
+
         let ctx = AppContext {
-            state: AppState::default(),
+            state,
             ui: UiState::default(),
             client,
             config_manager,
@@ -99,6 +106,7 @@ impl App {
 
         let api_url = self.ctx.config_manager.get_api_url();
         self.ctx.client = ClashClient::new(api_url.clone());
+        load_local_config_info(&self.ctx.config_manager, &mut self.ctx.state);
 
         // Check if an existing core is already running (user may have started one manually)
         if core_manager::is_core_running(&api_url).await {
@@ -181,6 +189,7 @@ impl App {
 
         while self.ctx.running {
             self.apply_finished_refresh().await;
+            self.expire_toast();
 
             terminal.draw(|f| {
                 crate::tabs::render(f, &self.ctx.state, &mut self.ctx.ui);
@@ -263,7 +272,7 @@ impl App {
                     self.ctx.ui.success_message = Some("正在刷新".to_string());
                 }
                 Command::CycleMode => {
-                    self.cycle_mode().await;
+                    self.cycle_mode();
                 }
                 Command::ToggleSearch => {
                     self.ctx.ui.search_active = true;
@@ -275,16 +284,21 @@ impl App {
                         ref proxy_name,
                         selected,
                     } => {
-                        if let Some(proxy) = self
+                        if let Some((group, node)) = self
                             .ctx
                             .state
                             .proxies
                             .iter()
                             .find(|p| &p.name == proxy_name)
-                            && let Some(ref all) = proxy.all
-                            && let Some(node) = all.get(selected)
+                            .and_then(|proxy| {
+                                proxy
+                                    .all
+                                    .as_ref()
+                                    .and_then(|all| all.get(selected))
+                                    .map(|node| (proxy.name.clone(), node.clone()))
+                            })
                         {
-                            let _ = self.ctx.client.switch_proxy(&proxy.name, node).await;
+                            self.switch_proxy_to(&group, &node);
                         }
                         self.ctx.ui.popup = Popup::None;
                     }
@@ -301,6 +315,12 @@ impl App {
                 Command::SearchCancel => {
                     self.ctx.ui.search_active = false;
                     self.ctx.ui.search_query.clear();
+                }
+                Command::ProxyPrev => {
+                    self.switch_selected_proxy_by(-1);
+                }
+                Command::ProxyNext => {
+                    self.switch_selected_proxy_by(1);
                 }
                 Command::ProviderUpdate => {
                     self.update_selected_provider().await;
@@ -370,6 +390,7 @@ impl App {
 
     fn start_refresh(&mut self) {
         self.merge_config_providers_into_state();
+        self.ctx.ui.refresh_in_progress = true;
 
         if self.refresh_handle.is_some() {
             return;
@@ -396,12 +417,20 @@ impl App {
             .expect("refresh handle exists after is_finished check");
         match handle.await {
             Ok(result) => {
+                self.ctx.ui.refresh_in_progress = false;
                 self.apply_refresh_result(result);
+                self.ctx.ui.last_refresh_at = Some(Instant::now());
+                if self.ctx.ui.success_message.as_deref() == Some("正在刷新") {
+                    self.ctx.ui.success_message = None;
+                }
                 if self.ctx.connected && self.updater.is_none() {
                     self.start_updater().await;
                 }
             }
-            Err(e) => log::warn!("refresh task failed: {}", e),
+            Err(e) => {
+                self.ctx.ui.refresh_in_progress = false;
+                log::warn!("refresh task failed: {}", e);
+            }
         }
     }
 
@@ -505,15 +534,21 @@ impl App {
         }
     }
 
-    async fn cycle_mode(&mut self) {
+    fn cycle_mode(&mut self) {
         self.ctx.ui.current_mode_index =
             (self.ctx.ui.current_mode_index + 1) % self.ctx.ui.modes.len();
         let mode = self.ctx.ui.modes[self.ctx.ui.current_mode_index].clone();
         if let Some(ref mut config) = self.ctx.state.config {
             config.mode = mode.to_lowercase();
         }
-        let _ = self.ctx.client.change_mode(&mode.to_lowercase()).await;
-        self.ctx.ui.success_message = Some(format!("模式切换为: {}", mode));
+        let client = self.ctx.client.clone();
+        let mode_for_api = mode.to_lowercase();
+        tokio::spawn(async move {
+            if let Err(e) = client.change_mode(&mode_for_api).await {
+                log::warn!("切换代理模式失败: {}", e);
+            }
+        });
+        self.ctx.ui.success_message = Some(format!("正在切换为 {}", mode));
     }
 
     async fn confirm_delete_provider(&mut self) {
@@ -532,6 +567,7 @@ impl App {
                 self.ctx.ui.error_message = Some(format!("删除失败: {}", e));
                 return;
             }
+            load_local_config_info(&self.ctx.config_manager, &mut self.ctx.state);
             if let Some(updater) = self.updater.as_ref() {
                 updater.remove_task(&name).await;
             }
@@ -588,6 +624,7 @@ impl App {
                     self.ctx.ui.error_message = Some(format!("添加失败: {}", e));
                     return;
                 }
+                load_local_config_info(&self.ctx.config_manager, &mut self.ctx.state);
 
                 if let Some(updater) = self.updater.as_ref() {
                     updater
@@ -595,6 +632,7 @@ impl App {
                         .await;
                     let updater = updater.clone();
                     let name_for_update = name.clone();
+                    self.ctx.ui.updating_providers.insert(name.clone());
                     tokio::spawn(async move {
                         updater.force_update(&name_for_update).await;
                     });
@@ -636,6 +674,7 @@ impl App {
                         self.ctx.ui.error_message = Some(format!("更新失败: {}", e));
                         return;
                     }
+                    load_local_config_info(&self.ctx.config_manager, &mut self.ctx.state);
 
                     if let Some(updater) = self.updater.as_ref() {
                         updater.update_task_interval(&name, interval as u64).await;
@@ -671,18 +710,22 @@ impl App {
         if let Some(updater) = self.updater.as_ref() {
             let updater = updater.clone();
             let name_for_update = name.clone();
+            self.ctx.ui.updating_providers.insert(name.clone());
             tokio::spawn(async move {
                 updater.force_update(&name_for_update).await;
             });
             self.ctx.ui.success_message = Some(format!("订阅 '{}' 正在更新", name));
             return;
         }
+        self.ctx.ui.updating_providers.insert(name.clone());
         match self.ctx.client.update_provider_proxy(&name).await {
             Ok(()) => {
+                self.ctx.ui.updating_providers.remove(&name);
                 self.ctx.ui.success_message = Some(format!("订阅 '{}' 更新完成", name));
                 self.start_refresh();
             }
             Err(e) => {
+                self.ctx.ui.updating_providers.remove(&name);
                 self.ctx.ui.error_message = Some(format!("订阅 '{}' 更新失败: {}", name, e));
             }
         }
@@ -709,10 +752,13 @@ impl App {
             .map(|provider| provider.name.clone())
             .collect();
         for name in names {
+            self.ctx.ui.updating_providers.insert(name.clone());
             if let Err(e) = self.ctx.client.update_provider_proxy(&name).await {
+                self.ctx.ui.updating_providers.remove(&name);
                 self.ctx.ui.error_message = Some(format!("订阅 '{}' 更新失败: {}", name, e));
                 return;
             }
+            self.ctx.ui.updating_providers.remove(&name);
         }
         self.ctx.ui.success_message = Some("所有订阅更新完成".to_string());
         self.start_refresh();
@@ -738,10 +784,12 @@ impl App {
     async fn handle_update_event(&mut self, event: UpdateEvent) {
         match event {
             UpdateEvent::Started(name) => {
+                self.ctx.ui.updating_providers.insert(name.clone());
                 log::info!("provider update started: {}", name);
                 self.add_log(format!("[{}] 开始更新订阅 '{}'...", now(), name));
             }
             UpdateEvent::Completed(name, success, error) => {
+                self.ctx.ui.updating_providers.remove(&name);
                 if success {
                     log::info!("provider update completed: {} success", name);
                     self.add_log(format!("[{}] 订阅 '{}' 更新成功", now(), name));
@@ -755,9 +803,102 @@ impl App {
                 self.start_refresh();
             }
             UpdateEvent::Progress(name, msg) => {
+                self.ctx.ui.updating_providers.insert(name.clone());
                 log::info!("provider update progress: {} - {}", name, msg);
                 self.add_log(format!("[{}] 订阅 '{}' - {}", now(), name, msg));
             }
+        }
+    }
+
+    fn switch_selected_proxy_by(&mut self, delta: isize) {
+        let Some(proxy) = self.ctx.state.proxies.get(self.ctx.ui.proxy_selected) else {
+            self.ctx.ui.error_message = Some("没有可切换的代理组".to_string());
+            return;
+        };
+
+        let Some(all) = proxy.all.as_ref().filter(|all| !all.is_empty()) else {
+            self.ctx.ui.error_message = Some("当前代理组没有可选节点".to_string());
+            return;
+        };
+
+        let current_idx = proxy
+            .now
+            .as_ref()
+            .and_then(|now| all.iter().position(|node| node == now))
+            .unwrap_or(0);
+        let next_idx = if delta < 0 {
+            current_idx.saturating_sub(1)
+        } else {
+            (current_idx + 1).min(all.len() - 1)
+        };
+
+        if next_idx == current_idx {
+            return;
+        }
+
+        let group = proxy.name.clone();
+        let node = all[next_idx].clone();
+        self.switch_proxy_to(&group, &node);
+    }
+
+    fn switch_proxy_to(&mut self, group: &str, node: &str) {
+        if let Some(proxy) = self
+            .ctx
+            .state
+            .proxies
+            .iter_mut()
+            .find(|proxy| proxy.name == group)
+        {
+            proxy.now = Some(node.to_string());
+        }
+        if let Some(proxy) = self.ctx.state.all_proxies.get_mut(group) {
+            proxy.now = Some(node.to_string());
+        }
+
+        let client = self.ctx.client.clone();
+        let group = group.to_string();
+        let node = node.to_string();
+        let message = format!("已切换到 {}", node);
+        tokio::spawn(async move {
+            if let Err(e) = client.switch_proxy(&group, &node).await {
+                log::warn!("切换代理节点失败: {}", e);
+            }
+        });
+        self.ctx.ui.success_message = Some(message);
+        self.start_refresh();
+    }
+
+    fn expire_toast(&mut self) {
+        let current = self
+            .ctx
+            .ui
+            .error_message
+            .as_ref()
+            .or(self.ctx.ui.success_message.as_ref())
+            .cloned();
+
+        let Some(current) = current else {
+            self.ctx.ui.toast_text = None;
+            self.ctx.ui.toast_set_at = None;
+            return;
+        };
+
+        if self.ctx.ui.toast_text.as_deref() != Some(current.as_str()) {
+            self.ctx.ui.toast_text = Some(current);
+            self.ctx.ui.toast_set_at = Some(Instant::now());
+            return;
+        }
+
+        if self
+            .ctx
+            .ui
+            .toast_set_at
+            .is_some_and(|set_at| set_at.elapsed() > Duration::from_secs(5))
+        {
+            self.ctx.ui.success_message = None;
+            self.ctx.ui.error_message = None;
+            self.ctx.ui.toast_text = None;
+            self.ctx.ui.toast_set_at = None;
         }
     }
 
@@ -804,6 +945,33 @@ async fn fetch_refresh_result(client: ClashClient, connected: bool) -> RefreshRe
             connections: connections.map_err(|e| e.to_string()),
             rules: rules.map_err(|e| e.to_string()),
         }),
+    }
+}
+
+fn local_config_to_runtime_config(config: ClashConfig) -> Config {
+    Config {
+        port: config.port,
+        socks_port: config.socks_port,
+        redir_port: config.redir_port,
+        tproxy_port: config.tproxy_port,
+        mixed_port: config.mixed_port,
+        mode: config.mode.unwrap_or_else(|| "rule".to_string()),
+        allow_lan: config.allow_lan.unwrap_or(false),
+        bind_address: config.bind_address.unwrap_or_default(),
+        log_level: config.log_level.unwrap_or_default(),
+        ..Default::default()
+    }
+}
+
+fn load_local_config_info(config_manager: &ConfigManager, state: &mut AppState) {
+    state.api_url = config_manager.get_api_url();
+    state.config_path = config_manager.config_path().display().to_string();
+    if let Ok(config) = config_manager.load() {
+        let config = local_config_to_runtime_config(config);
+        state.proxy_config = Some(config.clone());
+        if state.config.is_none() {
+            state.config = Some(config);
+        }
     }
 }
 

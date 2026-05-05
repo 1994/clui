@@ -32,26 +32,16 @@ pub fn render(f: &mut Frame, state: &AppState, ui: &mut UiState) {
 
     render_header(f, state, ui, chunks[0]);
 
-    let main_area = if ui.error_message.is_some() || ui.success_message.is_some() {
-        let msg_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(0)])
-            .split(chunks[1]);
-        render_toast(f, ui, msg_chunks[0]);
-        msg_chunks[1]
-    } else {
-        chunks[1]
-    };
-
     match ui.current_tab {
-        Tab::Overview => overview::render(f, state, ui, main_area),
-        Tab::Proxies => proxies::render(f, state, ui, main_area),
-        Tab::Providers => providers::render(f, state, ui, main_area),
-        Tab::Connections => connections::render(f, state, ui, main_area),
-        Tab::Rules => rules::render(f, state, ui, main_area),
-        Tab::Logs => logs::render(f, state, ui, main_area),
+        Tab::Overview => overview::render(f, state, ui, chunks[1]),
+        Tab::Proxies => proxies::render(f, state, ui, chunks[1]),
+        Tab::Providers => providers::render(f, state, ui, chunks[1]),
+        Tab::Connections => connections::render(f, state, ui, chunks[1]),
+        Tab::Rules => rules::render(f, state, ui, chunks[1]),
+        Tab::Logs => logs::render(f, state, ui, chunks[1]),
     }
 
+    render_toast(f, ui, chunks[0]);
     render_footer(f, ui, chunks[2]);
 }
 
@@ -61,9 +51,9 @@ fn render_header(f: &mut Frame, state: &AppState, ui: &UiState, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(14),
+            Constraint::Length(12),
             Constraint::Min(0),
-            Constraint::Length(28),
+            Constraint::Length(30),
         ])
         .split(area);
 
@@ -146,6 +136,19 @@ fn render_header(f: &mut Frame, state: &AppState, ui: &UiState, area: Rect) {
             Style::default().fg(Color::Black).bg(Color::DarkGray),
         ));
     }
+    if ui.refresh_in_progress {
+        badges.push(Span::raw(" "));
+        badges.push(Span::styled(
+            " 刷新中 ",
+            Style::default().fg(Color::Black).bg(Color::Yellow),
+        ));
+    } else if let Some(last_refresh_at) = ui.last_refresh_at {
+        badges.push(Span::raw(" "));
+        badges.push(Span::styled(
+            format!(" {}s ", last_refresh_at.elapsed().as_secs().min(99)),
+            Style::default().fg(Color::Black).bg(Color::DarkGray),
+        ));
+    }
 
     let status = Paragraph::new(Line::from(badges)).alignment(Alignment::Right);
     f.render_widget(status, chunks[2]);
@@ -156,7 +159,7 @@ fn render_header(f: &mut Frame, state: &AppState, ui: &UiState, area: Rect) {
 fn render_footer(f: &mut Frame, ui: &UiState, area: Rect) {
     let shortcuts = match ui.current_tab {
         Tab::Overview => "q退出 r刷新 m模式 F1帮助",
-        Tab::Proxies => "↑↓选择 Enter切换节点 s测速 F4排序 /搜索 F1帮助",
+        Tab::Proxies => "↑↓选择 ←→切节点 Enter展开 s测速 F4排序 /搜索 F1帮助",
         Tab::Providers => "↑↓选择 a添加 e编辑 d删除 u更新 h检查 F4排序 /搜索 F1帮助",
         Tab::Connections => "↑↓选择 d关闭 c关闭全部 F9关闭 F4排序 /搜索 F1帮助",
         Tab::Rules => "↑↓选择 F4排序 /搜索 F1帮助",
@@ -172,20 +175,39 @@ fn render_footer(f: &mut Frame, ui: &UiState, area: Rect) {
 // ========== Toast ==========
 
 fn render_toast(f: &mut Frame, ui: &UiState, area: Rect) {
+    if ui.success_message.is_none() && ui.error_message.is_none() {
+        return;
+    }
+    if area.height < 2 {
+        return;
+    }
+
+    let toast_area = Rect {
+        x: area.x,
+        y: area.y + 1,
+        width: area.width,
+        height: 1,
+    };
     if let Some(ref msg) = ui.success_message {
         let widget = Paragraph::new(msg.as_str())
             .style(
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(Color::Black)
+                    .bg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             )
             .alignment(Alignment::Center);
-        f.render_widget(widget, area);
+        f.render_widget(widget, toast_area);
     } else if let Some(ref msg) = ui.error_message {
         let widget = Paragraph::new(msg.as_str())
-            .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+            .style(
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Red)
+                    .add_modifier(Modifier::BOLD),
+            )
             .alignment(Alignment::Center);
-        f.render_widget(widget, area);
+        f.render_widget(widget, toast_area);
     }
 }
 

@@ -23,6 +23,8 @@ pub enum Command {
 
     // Proxy
     ProxySelect,
+    ProxyPrev,
+    ProxyNext,
     ProxySpeedTest,
     ProxySpeedTestAll,
 

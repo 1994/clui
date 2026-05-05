@@ -1,6 +1,7 @@
 use crate::state::AppState;
 use crate::ui::{Popup, Tab};
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
+use std::time::Instant;
 
 pub struct AppContext {
     pub state: AppState,
@@ -26,6 +27,8 @@ pub struct UiState {
     pub popup: Popup,
     pub error_message: Option<String>,
     pub success_message: Option<String>,
+    pub toast_set_at: Option<Instant>,
+    pub toast_text: Option<String>,
     pub input_fields: Vec<String>,
     pub input_field_index: usize,
     pub input_cursor: usize,
@@ -35,6 +38,9 @@ pub struct UiState {
     pub search_active: bool,
     pub help_active: bool,
     pub traffic_history: VecDeque<(u64, u64)>,
+    pub refresh_in_progress: bool,
+    pub last_refresh_at: Option<Instant>,
+    pub updating_providers: BTreeSet<String>,
     pub proxy_sort_asc: bool,
     pub provider_sort_asc: bool,
     pub connection_sort_asc: bool,
@@ -57,6 +63,8 @@ impl Default for UiState {
             popup: Popup::None,
             error_message: None,
             success_message: None,
+            toast_set_at: None,
+            toast_text: None,
             input_fields: vec![String::new(), String::new(), String::from("86400")],
             input_field_index: 0,
             input_cursor: 0,
@@ -71,6 +79,9 @@ impl Default for UiState {
             search_active: false,
             help_active: false,
             traffic_history: VecDeque::with_capacity(60),
+            refresh_in_progress: false,
+            last_refresh_at: None,
+            updating_providers: BTreeSet::new(),
             proxy_sort_asc: true,
             provider_sort_asc: true,
             connection_sort_asc: true,
